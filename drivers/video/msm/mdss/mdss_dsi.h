@@ -142,6 +142,8 @@ enum dsi_pm_type {
 #define DSI_INTR_CMD_MDP_DONE		BIT(8)
 #define DSI_INTR_CMD_DMA_DONE_MASK	BIT(1)
 #define DSI_INTR_CMD_DMA_DONE		BIT(0)
+/* Update this if more interrupt masks are added in future chipsets */
+#define DSI_INTR_TOTAL_MASK		0x2222AA02
 
 #define DSI_INTR_MASK_ALL	\
 		(DSI_INTR_ERROR_MASK | \
