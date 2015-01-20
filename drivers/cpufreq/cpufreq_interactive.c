@@ -390,9 +390,11 @@ static void cpufreq_interactive_timer(unsigned long data)
 	boosted = boost_val || now < (get_input_time() + boostpulse_duration_val);
 	this_hispeed_freq = max(hispeed_freq, pcpu->policy->min);
 
-	if (cpu_load >= go_hispeed_load || boosted) {
-		if (pcpu->policy->cur < this_hispeed_freq) {
-			new_freq = this_hispeed_freq;
+	cpufreq_notify_utilization(pcpu->policy, cpu_load);
+
+	if (cpu_load >= go_hispeed_load) {
+		if (pcpu->policy->cur < hispeed_freq) {
+			new_freq = hispeed_freq;
 		} else {
 			new_freq = choose_freq(pcpu, loadadjfreq);
 
