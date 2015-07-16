@@ -3191,6 +3191,7 @@ dhdsdio_mem_dump(dhd_bus_t *bus)
 		bus->activity = FALSE;
 		dhdsdio_clkctl(bus, CLK_NONE, TRUE);
 	}
+
 	dhd_os_sdunlock(bus->dhd);
 	if (!ret)
 		dhd_save_fwdump(bus->dhd, dhd->soc_ram, dhd->soc_ram_length);
