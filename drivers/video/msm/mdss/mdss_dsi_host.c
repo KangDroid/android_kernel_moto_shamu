@@ -1882,7 +1882,7 @@ void mdss_dsi_error(struct mdss_dsi_ctrl_pdata *ctrl)
 	intr |= DSI_INTR_ERROR;
 	MIPI_OUTP(ctrl->ctrl_base + 0x0110, intr);
 
-	dsi_send_events(ctrl, DSI_EV_MDP_BUSY_RELEASE);
+	dsi_send_events(ctrl, DSI_EV_MDP_BUSY_RELEASE, 1);
 }
 
 irqreturn_t mdss_dsi_isr(int irq, void *ptr)
