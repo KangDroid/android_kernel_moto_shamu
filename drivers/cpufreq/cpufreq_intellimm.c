@@ -28,6 +28,7 @@
 #include <linux/input.h>
 #include <linux/workqueue.h>
 #include <linux/slab.h>
+#include <linux/sched/rt.h>
 
 #define DEF_SAMPLING_RATE			(50000)
 #define DEF_FREQUENCY_DOWN_DIFFERENTIAL		(10)
@@ -172,7 +173,7 @@ static struct dbs_tuners {
 	.freq_down_step_barrier = DEF_FREQ_DOWN_STEP_BARRIER,
 };
 
-static inline u64 get_cpu_idle_time_jiffy(unsigned int cpu, u64 *wall)
+/*static inline u64 get_cpu_idle_time_jiffy(unsigned int cpu, u64 *wall)
 {
 	u64 idle_time;
 	u64 cur_wall_time;
@@ -204,7 +205,7 @@ static inline cputime64_t get_cpu_idle_time(unsigned int cpu, cputime64_t *wall)
 		idle_time += get_cpu_iowait_time_us(cpu, wall);
 
 	return idle_time;
-}
+}*/
 
 static inline cputime64_t get_cpu_iowait_time(unsigned int cpu,
 						cputime64_t *wall)
@@ -559,7 +560,7 @@ static ssize_t store_ignore_nice_load(struct kobject *a, struct attribute *b,
 		struct cpu_dbs_info_s *dbs_info;
 		dbs_info = &per_cpu(imm_cpu_dbs_info, j);
 		dbs_info->prev_cpu_idle = get_cpu_idle_time(j,
-						&dbs_info->prev_cpu_wall);
+						&dbs_info->prev_cpu_wall, 0);
 		if (dbs_tuners_ins.ignore_nice)
 			dbs_info->prev_cpu_nice =
 				kcpustat_cpu(j).cpustat[CPUTIME_NICE];
@@ -1027,7 +1028,7 @@ static void dbs_check_cpu(struct cpu_dbs_info_s *this_dbs_info)
 
 		j_dbs_info = &per_cpu(imm_cpu_dbs_info, j);
 
-		cur_idle_time = get_cpu_idle_time(j, &cur_wall_time);
+		cur_idle_time = get_cpu_idle_time(j, &cur_wall_time, 0);
 		cur_iowait_time = get_cpu_iowait_time(j, &cur_wall_time);
 
 		wall_time = (unsigned int)
@@ -1257,7 +1258,7 @@ static inline void dbs_timer_init(struct cpu_dbs_info_s *dbs_info)
 		delay -= jiffies % delay;
 
 	dbs_info->sample_type = DBS_NORMAL_SAMPLE;
-	INIT_DELAYED_WORK_DEFERRABLE(&dbs_info->work, do_dbs_timer);
+	INIT_DEFERRABLE_WORK(&dbs_info->work, do_dbs_timer);
 	queue_delayed_work_on(dbs_info->cpu, dbs_wq, &dbs_info->work, delay);
 }
 
@@ -1438,7 +1439,7 @@ static int cpufreq_governor_dbs(struct cpufreq_policy *policy,
 			j_dbs_info->cur_policy = policy;
 
 			j_dbs_info->prev_cpu_idle = get_cpu_idle_time(j,
-						&j_dbs_info->prev_cpu_wall);
+						&j_dbs_info->prev_cpu_wall, 0);
 			if (dbs_tuners_ins.ignore_nice)
 				j_dbs_info->prev_cpu_nice =
 					kcpustat_cpu(j).cpustat[CPUTIME_NICE];
@@ -1567,7 +1568,7 @@ static int cpufreq_gov_dbs_up_task(void *data)
 		dbs_tuners_ins.powersave_bias = 0;
 		dbs_freq_increase(policy, this_dbs_info->input_event_freq);
 		this_dbs_info->prev_cpu_idle = get_cpu_idle_time(cpu,
-						&this_dbs_info->prev_cpu_wall);
+						&this_dbs_info->prev_cpu_wall, 0);
 
 		mutex_unlock(&this_dbs_info->timer_mutex);
 
