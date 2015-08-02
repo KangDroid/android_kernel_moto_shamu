@@ -38,6 +38,10 @@
 #include "clock.h"
 #include "platsmp.h"
 
+#ifdef CONFIG_CPU_FREQ_GOV_UBERDEMAMD
+int set_second_phase_freq(int cpufreq); 
+	set_second_phase_freq(1728000);
+#endif
 static struct of_dev_auxdata apq8084_auxdata_lookup[] __initdata = {
 	OF_DEV_AUXDATA("qcom,msm-sdcc", 0xF9824000, "msm_sdcc.1", NULL),
 	OF_DEV_AUXDATA("qcom,sdhci-msm", 0xF9824900, "msm_sdcc.1", NULL),
