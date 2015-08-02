@@ -11,6 +11,14 @@ KERNEL_MODULES_INSTALL := system
 KERNEL_MODULES_OUT := $(TARGET_OUT)/lib/modules
 KERNEL_IMG=$(KERNEL_OUT)/arch/arm/boot/Image
 
+ifneq ($(USE_CCACHE),)
+    ccache := $(ANDROID_BUILD_TOP)/prebuilts/misc/$(HOST_PREBUILT_TAG)/ccache/ccache
+    # Check that the executable is here.
+    ccache := $(strip $(wildcard $(ccache)))
+endif
+KERNEL_CROSS_COMPILE := CROSS_COMPILE="$(ccache) arm-eabi-"
+ccache =
+
 ifeq ($(TARGET_USES_UNCOMPRESSED_KERNEL),true)
 $(info Using uncompressed kernel)
 TARGET_PREBUILT_KERNEL := $(KERNEL_OUT)/piggy
@@ -38,16 +46,16 @@ $(KERNEL_OUT):
 	mkdir -p $(KERNEL_OUT)
 
 $(KERNEL_CONFIG): $(KERNEL_OUT)
-	$(MAKE) -C $(KERNEL_DIR) O=$(KERNEL_OUT) ARCH=arm CROSS_COMPILE=arm-eabi- $(KERNEL_DEFCONFIG)
+	$(MAKE) -C $(KERNEL_DIR) O=$(KERNEL_OUT) ARCH=arm $(KERNEL_CROSS_COMPILE) $(KERNEL_DEFCONFIG)
 
 $(KERNEL_HEADERS_INSTALL): $(KERNEL_OUT) $(KERNEL_CONFIG)
-	$(MAKE) -C $(KERNEL_DIR) O=$(KERNEL_OUT) ARCH=arm CROSS_COMPILE=arm-eabi- headers_install
+	$(MAKE) -C $(KERNEL_DIR) O=$(KERNEL_OUT) ARCH=arm $(KERNEL_CROSS_COMPILE) headers_install
 
 $(KERNEL_OUT)/piggy : $(TARGET_PREBUILT_INT_KERNEL)
 	$(hide) gunzip -c $(KERNEL_OUT)/arch/arm/boot/compressed/piggy.gzip > $(KERNEL_OUT)/piggy
 
 $(TARGET_PREBUILT_INT_KERNEL): $(KERNEL_OUT) $(KERNEL_CONFIG) $(KERNEL_HEADERS_INSTALL)
-	$(MAKE) -C $(KERNEL_DIR) O=$(KERNEL_OUT) ARCH=arm $(KERNEL_BINARY_IMAGE)
+	$(MAKE) -C $(KERNEL_DIR) O=$(KERNEL_OUT) ARCH=arm $(KERNEL_CROSS_COMPILE) $(KERNEL_BINARY_IMAGE)
 
 kerneltags: $(KERNEL_OUT) $(KERNEL_CONFIG)
 	$(MAKE) -C $(KERNEL_DIR) O=$(KERNEL_OUT) ARCH=arm tags
