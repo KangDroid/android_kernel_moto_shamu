@@ -11,7 +11,7 @@ KERNEL_MODULES_INSTALL := system
 KERNEL_MODULES_OUT := $(TARGET_OUT)/lib/modules
 KERNEL_IMG=$(KERNEL_OUT)/arch/arm/boot/Image
 
-KERNEL_CROSS_COMPILE := CROSS_COMPILE="$(ANDROID_BUILD_TOP)/prebuilts/misc/$(HOST_PREBUILT_TAG)/ccache/ccache arm-eabi-"
+KERNEL_CROSS_COMPILE := CROSS_COMPILE="ccache arm-eabi-"
 
 ifeq ($(TARGET_USES_UNCOMPRESSED_KERNEL),true)
 $(info Using uncompressed kernel)
