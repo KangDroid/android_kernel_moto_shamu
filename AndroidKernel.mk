@@ -10,6 +10,9 @@ KERNEL_HEADERS_INSTALL := $(KERNEL_OUT)/usr
 KERNEL_MODULES_INSTALL := system
 KERNEL_MODULES_OUT := $(TARGET_OUT)/lib/modules
 KERNEL_IMG=$(KERNEL_OUT)/arch/arm/boot/Image
+ifeq ($(HOST_OS),darwin)
+  MAKE_FLAGS += C_INCLUDE_PATH=$(ANDROID_BUILD_TOP)/external/elfutils/0.153/libelf/
+endif
 
 KERNEL_CROSS_COMPILE := CROSS_COMPILE="ccache arm-eabi-"
 
@@ -40,25 +43,25 @@ $(KERNEL_OUT):
 	mkdir -p $(KERNEL_OUT)
 
 $(KERNEL_CONFIG): $(KERNEL_OUT)
-	$(MAKE) -C $(KERNEL_DIR) O=$(KERNEL_OUT) ARCH=arm CROSS_COMPILE="$(ANDROID_BUILD_TOP)/prebuilts/misc/$(HOST_PREBUILT_TAG)/ccache/ccache arm-eabi-" $(KERNEL_DEFCONFIG)
+	$(MAKE) $(MAKE_FLAGS) -C $(KERNEL_DIR) O=$(KERNEL_OUT) ARCH=arm CROSS_COMPILE="$(ANDROID_BUILD_TOP)/prebuilts/misc/$(HOST_PREBUILT_TAG)/ccache/ccache arm-eabi-" $(KERNEL_DEFCONFIG)
 
 $(KERNEL_HEADERS_INSTALL): $(KERNEL_OUT) $(KERNEL_CONFIG)
-	$(MAKE) -C $(KERNEL_DIR) O=$(KERNEL_OUT) ARCH=arm CROSS_COMPILE="$(ANDROID_BUILD_TOP)/prebuilts/misc/$(HOST_PREBUILT_TAG)/ccache/ccache arm-eabi-" headers_install
+	$(MAKE) $(MAKE_FLAGS) -C $(KERNEL_DIR) O=$(KERNEL_OUT) ARCH=arm CROSS_COMPILE="$(ANDROID_BUILD_TOP)/prebuilts/misc/$(HOST_PREBUILT_TAG)/ccache/ccache arm-eabi-" headers_install
 
 $(KERNEL_OUT)/piggy : $(TARGET_PREBUILT_INT_KERNEL)
 	$(hide) gunzip -c $(KERNEL_OUT)/arch/arm/boot/compressed/piggy.gzip > $(KERNEL_OUT)/piggy
 
 $(TARGET_PREBUILT_INT_KERNEL): $(KERNEL_OUT) $(KERNEL_CONFIG) $(KERNEL_HEADERS_INSTALL)
-	$(MAKE) -C $(KERNEL_DIR) O=$(KERNEL_OUT) ARCH=arm CROSS_COMPILE="$(ANDROID_BUILD_TOP)/prebuilts/misc/$(HOST_PREBUILT_TAG)/ccache/ccache arm-eabi-" $(KERNEL_BINARY_IMAGE)
+	$(MAKE) $(MAKE_FLAGS) -C $(KERNEL_DIR) O=$(KERNEL_OUT) ARCH=arm CROSS_COMPILE="$(ANDROID_BUILD_TOP)/prebuilts/misc/$(HOST_PREBUILT_TAG)/ccache/ccache arm-eabi-" $(KERNEL_BINARY_IMAGE)
 
 kerneltags: $(KERNEL_OUT) $(KERNEL_CONFIG)
-	$(MAKE) -C $(KERNEL_DIR) O=$(KERNEL_OUT) ARCH=arm tags
+	$(MAKE) $(MAKE_FLAGS) -C $(KERNEL_DIR) O=$(KERNEL_OUT) ARCH=arm tags
 
 kernelconfig: $(KERNEL_OUT) $(KERNEL_CONFIG)
 	env KCONFIG_NOTIMESTAMP=true \
-	     $(MAKE) -C $(KERNEL_DIR) O=$(KERNEL_OUT) ARCH=arm menuconfig
+	     $(MAKE) $(MAKE_FLAGS) -C $(KERNEL_DIR) O=$(KERNEL_OUT) ARCH=arm menuconfig
 	env KCONFIG_NOTIMESTAMP=true \
-	     $(MAKE) -C $(KERNEL_DIR) O=$(KERNEL_OUT) ARCH=arm savedefconfig
+	     $(MAKE) $(MAKE_FLAGS) -C $(KERNEL_DIR) O=$(KERNEL_OUT) ARCH=arm savedefconfig
 	cp $(KERNEL_OUT)/defconfig kernel/arch/arm/configs/$(KERNEL_DEFCONFIG)
 
 endif
