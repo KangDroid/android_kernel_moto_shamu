@@ -30,7 +30,7 @@ trap 'rm -f "$OUTDIR/$FILE" "$OUTDIR/$FILE.sed"' EXIT
 for i in "$@"
 do
 	FILE="$(basename "$i")"
-	sed -r \
+	gsed -r \
 		-e 's/([ \t(])(__user|__force|__iomem)[ \t]/\1/g' \
 		-e 's/__attribute_const__([ \t]|$)/\1/g' \
 		-e 's@^#include <linux/compiler.h>@@' \
