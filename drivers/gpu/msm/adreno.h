@@ -235,6 +235,7 @@ struct adreno_device {
 	unsigned int pm4_fw_version;
 	struct adreno_ringbuffer ringbuffer;
 	unsigned int wait_timeout;
+	struct adreno_gpudev *gpudev;
 	unsigned int ib_check_level;
 	unsigned int fast_hang_detect;
 	unsigned int ft_policy;
