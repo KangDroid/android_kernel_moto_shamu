@@ -50,9 +50,7 @@ static struct workqueue_struct *cpu_boost_wq;
 
 static struct work_struct input_boost_work;
 
-#ifdef CONFIG_STATE_NOTIFIER
 static struct notifier_block notif;
-#endif
 
 static unsigned int boost_ms;
 module_param(boost_ms, uint, 0644);
@@ -74,10 +72,8 @@ module_param(load_based_syncs, bool, 0644);
 static bool hotplug_boost = 1;
 module_param(hotplug_boost, bool, 0644);
 
-#ifdef CONFIG_STATE_NOTIFIER
 bool wakeup_boost;
 module_param(wakeup_boost, bool, 0644);
-#endif
 
 static struct delayed_work input_boost_rem;
 static u64 last_input_time;
@@ -493,7 +489,7 @@ static int cpuboost_cpu_callback(struct notifier_block *cpu_nb,
 		if (!hotplug_boost || !input_boost_enabled ||
 		     work_pending(&input_boost_work))
 			break;
-		pr_debug("Hotplug boost for CPU%lu\n", (long)hcpu);
+		pr_debug("Hotplug boost for CPU%d\n", (int)hcpu);
 		queue_work(cpu_boost_wq, &input_boost_work);
 		last_input_time = ktime_to_us(ktime_get());
 		break;
@@ -507,7 +503,6 @@ static struct notifier_block __refdata cpu_nblk = {
         .notifier_call = cpuboost_cpu_callback,
 };
 
-#ifdef CONFIG_STATE_NOTIFIER
 static void __wakeup_boost(void)
 {
 	if (!wakeup_boost || !input_boost_enabled ||
@@ -518,6 +513,7 @@ static void __wakeup_boost(void)
 	last_input_time = ktime_to_us(ktime_get());
 }
 
+#ifdef CONFIG_STATE_NOTIFIER
 static int state_notifier_callback(struct notifier_block *this,
 				unsigned long event, void *data)
 {
