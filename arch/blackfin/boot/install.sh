@@ -46,7 +46,7 @@ fi
 back_it_up() {
 	local file=$1
 	[ -f ${file} ] || return 0
-	local stamp=$(gstat -c %Y ${file} 2>/dev/null)
+	local stamp=$(${CONFIG_STAT} -c %Y ${file} 2>/dev/null)
 	mv ${file} ${file}.${stamp:-old}
 }
 
