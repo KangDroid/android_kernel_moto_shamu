@@ -52,7 +52,7 @@ test_create()
 		exit 1
 	fi
 
-	if [ $(gstat -c %s $file) -ne 5 ]; then
+	if [ $(stat -c %s $file) -ne 5 ]; then
 		echo "$file has invalid size" >&2
 		exit 1
 	fi
