@@ -376,7 +376,7 @@ KBUILD_CPPFLAGS := -D__KERNEL__
 KBUILD_CFLAGS   := -Wno-unused-function -Wstrict-prototypes -Wno-trigraphs \
 		   -fno-strict-aliasing -fno-common -Wno-cpp -Wno-unused-function \
 		   -Werror-implicit-function-declaration -Wno-format-security \
-                   -mtune=cortex-a15 -mcpu=cortex-a15 -mfpu=neon-vfpv4 \
+                   -mtune=cortex-a15 -mcpu=cortex-a15 -mfpu=neon-vfpv4 -Wno-unused-variable \
                    -fmodulo-sched -fmodulo-sched-allow-regmoves -fno-tree-vectorize -ffast-math \
                    -funswitch-loops -fpredictive-commoning -fgcse-after-reload \
 		   -fno-aggressive-loop-optimizations -fno-delete-null-pointer-checks \
