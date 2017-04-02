@@ -79,6 +79,8 @@ obj-$(CONFIG_ARCH_MSM8610) += clock-8610.o
 obj-$(CONFIG_ARCH_MSM8610) += clock-dsi-8610.o
 obj-$(CONFIG_ARCH_MDM9630) += clock-9630.o
 
+CFLAGS_msm-pm.o += -fno-aggressive-loop-optimizations
+
 obj-$(CONFIG_MSM_PM) += msm-pm.o pm-data.o lpm_levels.o
 
 CFLAGS_msm_vibrator.o += -Idrivers/staging/android
@@ -136,3 +138,4 @@ obj-$(CONFIG_ARCH_RANDOM) += early_random.o
 obj-$(CONFIG_PERFMAP) += perfmap.o
 obj-$(CONFIG_MMI_UNIT_INFO) += mmi-unit-info.o
 obj-$(CONFIG_MMI_SOC_INFO) += mmi_soc_info.o
+obj-$(CONFIG_MSM_SLEEPER) += msm-sleeper.o

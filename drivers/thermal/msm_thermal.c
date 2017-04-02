@@ -39,6 +39,7 @@
 #include <linux/msm_thermal_ioctl.h>
 #include <soc/qcom/rpm-smd.h>
 #include <soc/qcom/scm.h>
+#include <linux/sched/rt.h>
 
 #define MAX_RAILS 5
 #define MAX_THRESHOLD 2
@@ -46,6 +47,10 @@
 #define TSENS_NAME_MAX 20
 #define TSENS_NAME_FORMAT "tsens_tz_sensor%d"
 #define THERM_SECURE_BITE_CMD 8
+#define CORE_MAX_FREQ 2880000
+
+unsigned int temp_threshold = 70;
+module_param(temp_threshold, int, 0755);
 
 static struct msm_thermal_data msm_thermal_info;
 static struct delayed_work check_temp_work;
@@ -81,7 +86,8 @@ static bool freq_mitigation_enabled;
 static bool hotplug_enabled;
 static bool interrupt_mode_enable;
 static bool msm_thermal_probed;
-static bool gfx_phase_ctrl_enabled;
+static bool gfx_crit_phase_ctrl_enabled;
+static bool gfx_warm_phase_ctrl_enabled;
 static bool cx_phase_ctrl_enabled;
 static bool therm_reset_enabled;
 static int *tsens_id_map;
@@ -96,6 +102,7 @@ static struct kobj_attribute cx_mode_attr;
 static struct kobj_attribute gfx_mode_attr;
 static struct attribute_group cx_attr_gp;
 static struct attribute_group gfx_attr_gp;
+static long *tsens_temp_at_panic;
 
 enum thermal_threshold {
 	HOTPLUG_THRESHOLD_HIGH,
@@ -928,6 +935,23 @@ get_temp_exit:
 	return ret;
 }
 
+static int msm_thermal_panic_callback(struct notifier_block *nfb,
+			unsigned long event, void *data)
+{
+	int i;
+
+	for (i = 0; i < max_tsens_num; i++)
+		therm_get_temp(tsens_id_map[i],
+				THERM_TSENS_ID,
+				&tsens_temp_at_panic[i]);
+
+	return NOTIFY_OK;
+}
+
+static struct notifier_block msm_thermal_panic_notifier = {
+	.notifier_call = msm_thermal_panic_callback,
+};
+
 static int set_threshold(uint32_t zone_id,
 	struct sensor_threshold *threshold)
 {
@@ -1130,12 +1154,14 @@ static __ref int do_hotplug(void *data)
 {
 	int ret = 0;
 	uint32_t cpu = 0, mask = 0;
+	struct sched_param param = {.sched_priority = MAX_RT_PRIO-2};
 
 	if (!core_control_enabled) {
 		pr_debug("Core control disabled\n");
 		return -EINVAL;
 	}
 
+	sched_setscheduler(current, SCHED_FIFO, &param);
 	while (!kthread_should_stop()) {
 		while (wait_for_completion_interruptible(
 			&hotplug_notify_complete) != 0)
@@ -1181,19 +1207,32 @@ static int do_gfx_phase_cond(void)
 	int ret = 0;
 	uint32_t new_req_band = curr_gfx_band;
 
-	if (!gfx_phase_ctrl_enabled)
+	if (!gfx_warm_phase_ctrl_enabled && !gfx_crit_phase_ctrl_enabled)
 		return ret;
 
 	mutex_lock(&gfx_mutex);
-	ret = therm_get_temp(
-		thresh[MSM_GFX_PHASE_CTRL_WARM].thresh_list->sensor_id,
-		thresh[MSM_GFX_PHASE_CTRL_WARM].thresh_list->id_type,
-		&temp);
-	if (ret) {
-		pr_err("Unable to read TSENS sensor:%d. err:%d\n",
+	if (gfx_warm_phase_ctrl_enabled) {
+		ret = therm_get_temp(
+			thresh[MSM_GFX_PHASE_CTRL_WARM].thresh_list->sensor_id,
+			thresh[MSM_GFX_PHASE_CTRL_WARM].thresh_list->id_type,
+			&temp);
+		if (ret) {
+			pr_err("Unable to read TSENS sensor:%d. err:%d\n",
 			thresh[MSM_GFX_PHASE_CTRL_WARM].thresh_list->sensor_id,
 			ret);
-		goto gfx_phase_cond_exit;
+			goto gfx_phase_cond_exit;
+		}
+	} else {
+		ret = therm_get_temp(
+			thresh[MSM_GFX_PHASE_CTRL_HOT].thresh_list->sensor_id,
+			thresh[MSM_GFX_PHASE_CTRL_HOT].thresh_list->id_type,
+			&temp);
+		if (ret) {
+			pr_err("Unable to read TSENS sensor:%d. err:%d\n",
+			thresh[MSM_GFX_PHASE_CTRL_HOT].thresh_list->sensor_id,
+			ret);
+			goto gfx_phase_cond_exit;
+		}
 	}
 
 	switch (curr_gfx_band) {
@@ -1407,7 +1446,7 @@ static void do_freq_control(long temp)
 	uint32_t cpu = 0;
 	uint32_t max_freq = cpus[cpu].limited_max_freq;
 
-	if (temp >= msm_thermal_info.limit_temp_degC) {
+	if (temp >= temp_threshold) {
 		if (limit_idx == limit_idx_low)
 			return;
 
@@ -1415,7 +1454,7 @@ static void do_freq_control(long temp)
 		if (limit_idx < limit_idx_low)
 			limit_idx = limit_idx_low;
 		max_freq = table[limit_idx].frequency;
-	} else if (temp < msm_thermal_info.limit_temp_degC -
+	} else if (temp < temp_threshold -
 		 msm_thermal_info.temp_hysteresis_degC) {
 		if (limit_idx == limit_idx_high)
 			return;
@@ -1423,7 +1462,7 @@ static void do_freq_control(long temp)
 		limit_idx += msm_thermal_info.bootup_freq_step;
 		if (limit_idx >= limit_idx_high) {
 			limit_idx = limit_idx_high;
-			max_freq = UINT_MAX;
+			max_freq = CORE_MAX_FREQ;
 		} else
 			max_freq = table[limit_idx].frequency;
 	}
@@ -1449,6 +1488,9 @@ static void check_temp(struct work_struct *work)
 	static int limit_init;
 	long temp = 0;
 	int ret = 0;
+
+	if (!msm_thermal_probed)
+		return;
 
 	do_therm_reset();
 
@@ -1506,7 +1548,7 @@ static int hotplug_notify(enum thermal_trip_type type, int temp, void *data)
 {
 	struct cpu_info *cpu_node = (struct cpu_info *)data;
 
-	pr_info("%s reach temp threshold: %d\n", cpu_node->sensor_type, temp);
+	pr_info_ratelimited("%s reach temp threshold: %d\n", cpu_node->sensor_type, temp);
 
 	if (!(msm_thermal_info.core_control_mask & BIT(cpu_node->cpu)))
 		return 0;
@@ -1615,25 +1657,41 @@ init_kthread:
 
 static __ref int do_freq_mitigation(void *data)
 {
+	long temp = 0;
 	int ret = 0;
+	bool skip_mitig = false;
 	uint32_t cpu = 0, max_freq_req = 0, min_freq_req = 0;
+	struct sched_param param = {.sched_priority = MAX_RT_PRIO-1};
 
+	sched_setscheduler(current, SCHED_FIFO, &param);
 	while (!kthread_should_stop()) {
 		while (wait_for_completion_interruptible(
 			&freq_mitigation_complete) != 0)
 			;
 		INIT_COMPLETION(freq_mitigation_complete);
 
-		get_online_cpus();
+		ret = therm_get_temp(msm_thermal_info.sensor_id,
+			THERM_TSENS_ID, &temp);
+		if (ret)
+			pr_err("Unable to read TSENS sensor:%d\n",
+				msm_thermal_info.sensor_id);
+		else if (temp <= msm_thermal_info.limit_temp_degC)
+			skip_mitig = true;
+		else 
+			skip_mitig = false;
+
 		for_each_possible_cpu(cpu) {
 			max_freq_req = (cpus[cpu].max_freq) ?
 					msm_thermal_info.freq_limit :
-					UINT_MAX;
+					CORE_MAX_FREQ;
 			max_freq_req = min(max_freq_req,
 					cpus[cpu].user_max_freq);
 
 			min_freq_req = max(min_freq_limit,
 					cpus[cpu].user_min_freq);
+
+			if (skip_mitig && CORE_MAX_FREQ > max_freq_req)
+				max_freq_req = CORE_MAX_FREQ;
 
 			if ((max_freq_req == cpus[cpu].limited_max_freq)
 				&& (min_freq_req ==
@@ -1652,8 +1710,8 @@ reset_threshold:
 				cpus[cpu].freq_thresh_clear = false;
 			}
 		}
-		put_online_cpus();
 	}
+
 	return ret;
 }
 
@@ -1672,16 +1730,17 @@ static int freq_mitigation_notify(enum thermal_trip_type type,
 	switch (type) {
 	case THERMAL_TRIP_CONFIGURABLE_HI:
 		if (!cpu_node->max_freq) {
-			pr_info("Mitigating CPU%d frequency to %d\n",
-				cpu_node->cpu,
-				msm_thermal_info.freq_limit);
+			pr_info_ratelimited(
+				"Mitigating CPU%d frequency to %d\n",
+				cpu_node->cpu, msm_thermal_info.freq_limit);
 
 			cpu_node->max_freq = true;
 		}
 		break;
 	case THERMAL_TRIP_CONFIGURABLE_LOW:
 		if (cpu_node->max_freq) {
-			pr_info("Removing frequency mitigation for CPU%d\n",
+			pr_info_ratelimited(
+				"Removing frequency mitigation for CPU%d\n",
 				cpu_node->cpu);
 
 			cpu_node->max_freq = false;
@@ -1854,44 +1913,51 @@ static void gfx_phase_ctrl_notify(struct therm_threshold *trig_thresh)
 	uint32_t new_req_band = curr_gfx_band;
 	int ret = 0;
 
-	if (!gfx_phase_ctrl_enabled)
+	if (!gfx_warm_phase_ctrl_enabled && !gfx_crit_phase_ctrl_enabled)
 		return;
 
 	if (trig_thresh->trip_triggered < 0)
 		goto gfx_phase_ctrl_exit;
 
 	mutex_lock(&gfx_mutex);
-	switch (thresh[MSM_GFX_PHASE_CTRL_HOT].thresh_list->trip_triggered) {
-	case THERMAL_TRIP_CONFIGURABLE_HI:
-		new_req_band = MSM_HOT_CRITICAL;
-		pr_debug("sensor:%d reached hot critical thresh for GFX\n",
+	if (gfx_crit_phase_ctrl_enabled) {
+		switch (
+		thresh[MSM_GFX_PHASE_CTRL_HOT].thresh_list->trip_triggered) {
+		case THERMAL_TRIP_CONFIGURABLE_HI:
+			new_req_band = MSM_HOT_CRITICAL;
+			pr_debug(
+			"sensor:%d reached hot critical thresh for GFX\n",
+				tsens_id_map[trig_thresh->sensor_id]);
+			goto notify_new_band;
+			break;
+		case THERMAL_TRIP_CONFIGURABLE_LOW:
+			new_req_band = MSM_WARM;
+			pr_debug("sensor:%d reached warm thresh for GFX\n",
 			tsens_id_map[trig_thresh->sensor_id]);
-		goto notify_new_band;
-		break;
-	case THERMAL_TRIP_CONFIGURABLE_LOW:
-		new_req_band = MSM_WARM;
-		pr_debug("sensor:%d reached warm thresh for GFX\n",
-			tsens_id_map[trig_thresh->sensor_id]);
-		goto notify_new_band;
-		break;
-	default:
-		break;
+			goto notify_new_band;
+			break;
+		default:
+			break;
+		}
 	}
-	switch (thresh[MSM_GFX_PHASE_CTRL_WARM].thresh_list->trip_triggered) {
-	case THERMAL_TRIP_CONFIGURABLE_HI:
-		new_req_band = MSM_WARM;
-		pr_debug("sensor:%d reached warm thresh for GFX\n",
-			tsens_id_map[trig_thresh->sensor_id]);
-		goto notify_new_band;
-		break;
-	case THERMAL_TRIP_CONFIGURABLE_LOW:
-		new_req_band = MSM_NORMAL;
-		pr_debug("sensor:%d reached normal thresh for GFX\n",
-			tsens_id_map[trig_thresh->sensor_id]);
-		goto notify_new_band;
-		break;
-	default:
-		break;
+	if (gfx_warm_phase_ctrl_enabled) {
+		switch (
+		thresh[MSM_GFX_PHASE_CTRL_WARM].thresh_list->trip_triggered) {
+		case THERMAL_TRIP_CONFIGURABLE_HI:
+			new_req_band = MSM_WARM;
+			pr_debug("sensor:%d reached warm thresh for GFX\n",
+				tsens_id_map[trig_thresh->sensor_id]);
+			goto notify_new_band;
+			break;
+		case THERMAL_TRIP_CONFIGURABLE_LOW:
+			new_req_band = MSM_NORMAL;
+			pr_debug("sensor:%d reached normal thresh for GFX\n",
+				tsens_id_map[trig_thresh->sensor_id]);
+			goto notify_new_band;
+			break;
+		default:
+			break;
+		}
 	}
 
 notify_new_band:
@@ -1904,15 +1970,19 @@ notify_new_band:
 gfx_phase_ctrl_exit:
 	switch (curr_gfx_band) {
 	case MSM_HOT_CRITICAL:
-		therm_set_threshold(&thresh[MSM_GFX_PHASE_CTRL_HOT]);
+		if (gfx_crit_phase_ctrl_enabled)
+			therm_set_threshold(&thresh[MSM_GFX_PHASE_CTRL_HOT]);
 		break;
 	case MSM_NORMAL:
-		therm_set_threshold(&thresh[MSM_GFX_PHASE_CTRL_WARM]);
+		if (gfx_warm_phase_ctrl_enabled)
+			therm_set_threshold(&thresh[MSM_GFX_PHASE_CTRL_WARM]);
 		break;
 	case MSM_WARM:
 	default:
-		therm_set_threshold(&thresh[MSM_GFX_PHASE_CTRL_HOT]);
-		therm_set_threshold(&thresh[MSM_GFX_PHASE_CTRL_WARM]);
+		if (gfx_crit_phase_ctrl_enabled)
+			therm_set_threshold(&thresh[MSM_GFX_PHASE_CTRL_HOT]);
+		if (gfx_warm_phase_ctrl_enabled)
+			therm_set_threshold(&thresh[MSM_GFX_PHASE_CTRL_WARM]);
 		break;
 	}
 	return;
@@ -2053,10 +2123,13 @@ static void thermal_monitor_init(void)
 		!(convert_to_zone_id(&thresh[MSM_VDD_RESTRICTION])))
 		therm_set_threshold(&thresh[MSM_VDD_RESTRICTION]);
 
-	if ((gfx_phase_ctrl_enabled) &&
-		!(convert_to_zone_id(&thresh[MSM_GFX_PHASE_CTRL_WARM])) &&
-		!(convert_to_zone_id(&thresh[MSM_GFX_PHASE_CTRL_HOT]))) {
+	if ((gfx_warm_phase_ctrl_enabled) &&
+		!(convert_to_zone_id(&thresh[MSM_GFX_PHASE_CTRL_WARM]))) {
 		therm_set_threshold(&thresh[MSM_GFX_PHASE_CTRL_WARM]);
+	}
+
+	if ((gfx_crit_phase_ctrl_enabled) &&
+		!(convert_to_zone_id(&thresh[MSM_GFX_PHASE_CTRL_HOT]))) {
 		therm_set_threshold(&thresh[MSM_GFX_PHASE_CTRL_HOT]);
 	}
 
@@ -2157,7 +2230,7 @@ static int msm_thermal_add_gfx_nodes(void)
 	struct kobject *gfx_kobj = NULL;
 	int ret = 0;
 
-	if (!gfx_phase_ctrl_enabled)
+	if (!gfx_warm_phase_ctrl_enabled && !gfx_crit_phase_ctrl_enabled)
 		return -EINVAL;
 
 	module_kobj = kset_find_obj(module_kset, KBUILD_MODNAME);
@@ -2263,11 +2336,11 @@ static void __ref disable_msm_thermal(void)
 
 	get_online_cpus();
 	for_each_possible_cpu(cpu) {
-		if (cpus[cpu].limited_max_freq == UINT_MAX &&
+		if (cpus[cpu].limited_max_freq == CORE_MAX_FREQ &&
 			cpus[cpu].limited_min_freq == 0)
 			continue;
 		pr_info("Max frequency reset for CPU%d\n", cpu);
-		cpus[cpu].limited_max_freq = UINT_MAX;
+		cpus[cpu].limited_max_freq = CORE_MAX_FREQ;
 		cpus[cpu].limited_min_freq = 0;
 		update_cpu_freq(cpu);
 	}
@@ -2445,16 +2518,48 @@ done_cc_nodes:
 	return ret;
 }
 
-int msm_thermal_pre_init(void)
+static void msm_thermal_panic_notifier_init(struct device *dev)
+{
+	int i;
+
+	tsens_temp_at_panic = devm_kzalloc(dev,
+				sizeof(long) * max_tsens_num,
+				GFP_KERNEL);
+	if (!tsens_temp_at_panic) {
+		pr_err("kzalloc failed\n");
+		return;
+	}
+
+	for (i = 0; i < max_tsens_num; i++)
+		tsens_temp_at_panic[i] = LONG_MIN;
+
+	atomic_notifier_chain_register(&panic_notifier_list,
+		&msm_thermal_panic_notifier);
+}
+
+int msm_thermal_pre_init(struct device *dev)
 {
 	int ret = 0;
 
-	tsens_get_max_sensor_num(&max_tsens_num);
+	if (tsens_is_ready() <= 0) {
+		pr_err("Tsens driver is not ready yet\n");
+		return -EPROBE_DEFER;
+	}
+
+	ret = tsens_get_max_sensor_num(&max_tsens_num);
+	if (ret < 0) {
+		pr_err("failed to get max sensor number, err:%d\n", ret);
+		return ret;
+	}
+
 	if (create_sensor_id_map()) {
 		pr_err("Creating sensor id map failed\n");
 		ret = -EINVAL;
 		goto pre_init_exit;
 	}
+
+	if (!tsens_temp_at_panic)
+		msm_thermal_panic_notifier_init(dev);
 
 	if (!thresh) {
 		thresh = kzalloc(
@@ -2483,9 +2588,9 @@ int msm_thermal_init(struct msm_thermal_data *pdata)
 		cpus[cpu].user_offline = 0;
 		cpus[cpu].hotplug_thresh_clear = false;
 		cpus[cpu].max_freq = false;
-		cpus[cpu].user_max_freq = UINT_MAX;
+		cpus[cpu].user_max_freq = CORE_MAX_FREQ;
 		cpus[cpu].user_min_freq = 0;
-		cpus[cpu].limited_max_freq = UINT_MAX;
+		cpus[cpu].limited_max_freq = CORE_MAX_FREQ;
 		cpus[cpu].limited_min_freq = 0;
 		cpus[cpu].freq_thresh_clear = false;
 	}
@@ -2508,7 +2613,7 @@ int msm_thermal_init(struct msm_thermal_data *pdata)
 	INIT_DELAYED_WORK(&check_temp_work, check_temp);
 	schedule_delayed_work(&check_temp_work, 0);
 
-	if (num_possible_cpus() > 1)
+	if (core_control_enabled)
 		register_cpu_notifier(&msm_thermal_cpu_notifier);
 
 	return ret;
@@ -2936,7 +3041,7 @@ static int probe_cc(struct device_node *node, struct msm_thermal_data *data,
 	uint32_t cpu = 0;
 
 	if (num_possible_cpus() > 1) {
-		core_control_enabled = 1;
+//		core_control_enabled = 1;
 		hotplug_enabled = 1;
 	}
 
@@ -3010,30 +3115,6 @@ static int probe_gfx_phase_ctrl(struct device_node *node,
 	const char *tmp_str = NULL;
 	int ret = 0;
 
-	key = "qcom,gfx-phase-warm-temp";
-	ret = of_property_read_u32(node, key,
-		&data->gfx_phase_warm_temp_degC);
-	if (ret)
-		goto probe_gfx_exit;
-
-	key = "qcom,gfx-phase-warm-temp-hyst";
-	ret = of_property_read_u32(node, key,
-		&data->gfx_phase_warm_temp_hyst_degC);
-	if (ret)
-		goto probe_gfx_exit;
-
-	key = "qcom,gfx-phase-hot-crit-temp";
-	ret = of_property_read_u32(node, key,
-		&data->gfx_phase_hot_temp_degC);
-	if (ret)
-		goto probe_gfx_exit;
-
-	key = "qcom,gfx-phase-hot-crit-temp-hyst";
-	ret = of_property_read_u32(node, key,
-		&data->gfx_phase_hot_temp_hyst_degC);
-	if (ret)
-		goto probe_gfx_exit;
-
 	key = "qcom,gfx-sensor-id";
 	ret = of_property_read_u32(node, key,
 		&data->gfx_sensor);
@@ -3047,14 +3128,51 @@ static int probe_gfx_phase_ctrl(struct device_node *node,
 		goto probe_gfx_exit;
 	data->gfx_phase_request_key = msm_thermal_str_to_int(tmp_str);
 
+	key = "qcom,gfx-phase-warm-temp";
+	ret = of_property_read_u32(node, key,
+		&data->gfx_phase_warm_temp_degC);
+	if (ret) {
+		dev_info(&pdev->dev,
+		"%s:Failed reading node=%s, key=%s. err=%d. KTM continues\n",
+			KBUILD_MODNAME, node->full_name, key, ret);
+		data->gfx_phase_warm_temp_degC = INT_MIN;
+		goto probe_gfx_crit;
+	}
+
+	key = "qcom,gfx-phase-warm-temp-hyst";
+	ret = of_property_read_u32(node, key,
+		&data->gfx_phase_warm_temp_hyst_degC);
+	if (ret) {
+		dev_info(&pdev->dev,
+		"%s:Failed reading node=%s, key=%s. err=%d. KTM continues\n",
+			KBUILD_MODNAME, node->full_name, key, ret);
+		goto probe_gfx_crit;
+	}
+
 	ret = init_threshold(MSM_GFX_PHASE_CTRL_WARM, data->gfx_sensor,
 		data->gfx_phase_warm_temp_degC, data->gfx_phase_warm_temp_degC -
 		data->gfx_phase_warm_temp_hyst_degC,
 		gfx_phase_ctrl_notify);
 	if (ret) {
 		pr_err("init WARM threshold failed. err:%d\n", ret);
+		goto probe_gfx_crit;
+	}
+	gfx_warm_phase_ctrl_enabled = true;
+
+probe_gfx_crit:
+	key = "qcom,gfx-phase-hot-crit-temp";
+	ret = of_property_read_u32(node, key,
+		&data->gfx_phase_hot_temp_degC);
+	if (ret) {
+		data->gfx_phase_hot_temp_degC = INT_MAX;
 		goto probe_gfx_exit;
 	}
+
+	key = "qcom,gfx-phase-hot-crit-temp-hyst";
+	ret = of_property_read_u32(node, key,
+		&data->gfx_phase_hot_temp_hyst_degC);
+	if (ret)
+		goto probe_gfx_exit;
 
 	ret = init_threshold(MSM_GFX_PHASE_CTRL_HOT, data->gfx_sensor,
 		data->gfx_phase_hot_temp_degC, data->gfx_phase_hot_temp_degC -
@@ -3065,14 +3183,13 @@ static int probe_gfx_phase_ctrl(struct device_node *node,
 		goto probe_gfx_exit;
 	}
 
-	gfx_phase_ctrl_enabled = true;
+	gfx_crit_phase_ctrl_enabled = true;
 
 probe_gfx_exit:
 	if (ret) {
 		dev_info(&pdev->dev,
 		"%s:Failed reading node=%s, key=%s. err=%d. KTM continues\n",
 			KBUILD_MODNAME, node->full_name, key, ret);
-		gfx_phase_ctrl_enabled = false;
 	}
 	return ret;
 }
@@ -3218,7 +3335,7 @@ static int msm_thermal_dev_probe(struct platform_device *pdev)
 	struct msm_thermal_data data;
 
 	memset(&data, 0, sizeof(struct msm_thermal_data));
-	ret = msm_thermal_pre_init();
+	ret = msm_thermal_pre_init(&pdev->dev);
 	if (ret) {
 		pr_err("thermal pre init failed. err:%d\n", ret);
 		goto fail;
@@ -3308,8 +3425,10 @@ static int msm_thermal_dev_exit(struct platform_device *inp_dev)
 			kfree(thresh[MSM_VDD_RESTRICTION].thresh_list);
 		if (cx_phase_ctrl_enabled)
 			kfree(thresh[MSM_CX_PHASE_CTRL_HOT].thresh_list);
-		if (gfx_phase_ctrl_enabled) {
+		if (gfx_warm_phase_ctrl_enabled) {
 			kfree(thresh[MSM_GFX_PHASE_CTRL_WARM].thresh_list);
+		}
+		if (gfx_crit_phase_ctrl_enabled) {
 			kfree(thresh[MSM_GFX_PHASE_CTRL_HOT].thresh_list);
 		}
 		kfree(thresh);
@@ -3337,9 +3456,13 @@ int __init msm_thermal_device_init(void)
 {
 	return platform_driver_register(&msm_thermal_device_driver);
 }
+arch_initcall(msm_thermal_device_init);
 
 int __init msm_thermal_late_init(void)
 {
+	if (!msm_thermal_probed)
+		return 0;
+
 	if (num_possible_cpus() > 1)
 		msm_thermal_add_cc_nodes();
 	msm_thermal_add_psm_nodes();
